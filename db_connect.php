@@ -1,0 +1,77 @@
+<?php
+$host = "localhost";
+$user = "root";
+$pass = "";
+$dbname = "brew_bean";
+$port = 3307;
+
+$conn = mysqli_connect($host, $user, $pass, $dbname, $port);
+
+if (!$conn) {
+    die("Connection failed: " . mysqli_connect_error());
+}
+
+// Auto-migrate: add customer_name/email/phone/address to orders if not present
+$_migCols = ['customer_name' => "VARCHAR(100) DEFAULT NULL",
+             'customer_email'   => "VARCHAR(150) DEFAULT NULL",
+             'customer_phone'   => "VARCHAR(30)  DEFAULT NULL",
+             'customer_address' => "TEXT         DEFAULT NULL"];
+foreach ($_migCols as $_col => $_def) {
+    $_r = mysqli_query($conn, "SHOW COLUMNS FROM orders LIKE '$_col'");
+    if ($_r && mysqli_num_rows($_r) === 0) {
+        mysqli_query($conn, "ALTER TABLE orders ADD COLUMN $_col $_def");
+    }
+}
+unset($_migCols, $_col, $_def, $_r);
+
+// Auto-migrate: fix products.product_id → PRIMARY KEY + AUTO_INCREMENT
+if (!file_exists(__DIR__ . '/.mig_product_pk')) {
+    $_pk = mysqli_query($conn, "SHOW KEYS FROM products WHERE Key_name = 'PRIMARY'");
+    if ($_pk && mysqli_num_rows($_pk) === 0) {
+        // أعطِ كل سجل عنده id=0 رقماً فريداً أولاً
+        $_mx  = mysqli_query($conn, "SELECT MAX(product_id) AS mx FROM products WHERE product_id > 0");
+        $_mxr = mysqli_fetch_assoc($_mx);
+        $_nxt = max((int)$_mxr['mx'] + 1, 1);
+        $_cnt = mysqli_query($conn, "SELECT COUNT(*) AS c FROM products WHERE product_id = 0");
+        $_cntr = mysqli_fetch_assoc($_cnt);
+        for ($_i = 0; $_i < (int)$_cntr['c']; $_i++) {
+            mysqli_query($conn, "UPDATE products SET product_id = $_nxt WHERE product_id = 0 LIMIT 1");
+            $_nxt++;
+        }
+        mysqli_query($conn, "ALTER TABLE products ADD PRIMARY KEY (product_id)");
+        mysqli_query($conn, "ALTER TABLE products MODIFY product_id INT NOT NULL AUTO_INCREMENT");
+        mysqli_query($conn, "ALTER TABLE products AUTO_INCREMENT = $_nxt");
+        unset($_mx, $_mxr, $_nxt, $_cnt, $_cntr, $_i);
+    }
+    unset($_pk);
+    file_put_contents(__DIR__ . '/.mig_product_pk', date('Y-m-d H:i:s'));
+}
+
+// Auto-migrate: add created_at to products if not present
+$_r = mysqli_query($conn, "SHOW COLUMNS FROM products LIKE 'created_at'");
+if ($_r && mysqli_num_rows($_r) === 0) {
+    mysqli_query($conn, "ALTER TABLE products ADD COLUMN created_at DATETIME DEFAULT NULL");
+}
+unset($_r);
+
+// One-time reset: clear created_at for all pre-existing products
+if (!file_exists(__DIR__ . '/.mig_created_at_reset')) {
+    mysqli_query($conn, "UPDATE products SET created_at = NULL");
+    file_put_contents(__DIR__ . '/.mig_created_at_reset', date('Y-m-d H:i:s'));
+}
+
+// Auto-migrate: create search_history table if not present
+$_r = mysqli_query($conn, "SHOW TABLES LIKE 'search_history'");
+if ($_r && mysqli_num_rows($_r) === 0) {
+    mysqli_query($conn, "CREATE TABLE search_history (
+        search_id int(11) NOT NULL AUTO_INCREMENT,
+        customer_id int(11) DEFAULT NULL,
+        search_keyword varchar(255) NOT NULL,
+        search_date datetime DEFAULT current_timestamp(),
+        PRIMARY KEY (search_id),
+        KEY customer_id (customer_id),
+        CONSTRAINT search_history_ibfk_1 FOREIGN KEY (customer_id) REFERENCES customers (customer_id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+}
+unset($_r);
+?>
